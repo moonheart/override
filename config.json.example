@@ -16,5 +16,6 @@
   "chat_model_default": "gpt-4o",
   "chat_model_map": {},
   "chat_locale": "zh_CN",
-  "auth_token": ""
+  "auth_token": "",
+  "auth_domain": "xxx.com"
 }

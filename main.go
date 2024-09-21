@@ -12,6 +12,8 @@ import (
 	"golang.org/x/net/http2"
 	"io"
 	"log"
+	"math"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -46,6 +48,7 @@ type config struct {
 	ChatModelMap         map[string]string `json:"chat_model_map"`
 	ChatLocale           string            `json:"chat_locale"`
 	AuthToken            string            `json:"auth_token"`
+	AuthDomain           string            `json:"auth_domain"`
 }
 
 func readConfig() *config {
@@ -185,6 +188,13 @@ func (s *ProxyService) InitRoutes(e *gin.Engine) {
 	e.GET("/_ping", s.pong)
 	e.GET("/models", s.models)
 	e.GET("/v1/models", s.models)
+	e.GET("/login/device", s.loginDevice)
+	e.POST("/login/device/code", s.loginDeviceCode)
+	e.POST("/login/oauth/access_token", s.loginOAuthAccessToken)
+	e.GET("/copilot_internal/v2/token", s.internalV2Token)
+	e.POST("/telemetry", s.telemetry)
+	e.GET("/user", s.user)
+	e.GET("/api/v3/user", s.user)
 	authToken := s.cfg.AuthToken // replace with your dynamic value as needed
 	if authToken != "" {
 		// 鉴权
@@ -197,12 +207,88 @@ func (s *ProxyService) InitRoutes(e *gin.Engine) {
 			v1.POST("/v1/engines/copilot-codex/completions", s.codeCompletions)
 		}
 	} else {
+		e.POST("/chat/completions", s.completions)
 		e.POST("/v1/chat/completions", s.completions)
 		e.POST("/v1/engines/copilot-codex/completions", s.codeCompletions)
 
 		e.POST("/v1/v1/chat/completions", s.completions)
 		e.POST("/v1/v1/engines/copilot-codex/completions", s.codeCompletions)
 	}
+}
+
+func (s *ProxyService) internalV2Token(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"annotations_enabled":                      false,
+		"chat_enabled":                             true,
+		"chat_jetbrains_enabled":                   true,
+		"code_quote_enabled":                       true,
+		"codesearch":                               false,
+		"copilot_ide_agent_chat_gpt4_small_prompt": false,
+		"copilotignore_enabled":                    false,
+		"endpoints": gin.H{
+			"api":            "https://" + s.cfg.AuthDomain,
+			"origin-tracker": "https://origin-tracker.githubusercontent.com",
+			"proxy":          "https://copilot-proxy." + s.cfg.AuthDomain,
+			"telemetry":      "https://copilot-telemetry-service." + s.cfg.AuthDomain,
+		},
+		"expires_at":               1726850160,
+		"individual":               true,
+		"intellij_editor_fetcher":  false,
+		"nes_enabled":              false,
+		"project":                  "copilot-proxy",
+		"prompt_8k":                true,
+		"public_suggestions":       "disabled",
+		"refresh_in":               1500,
+		"sku":                      "copilot_for_business_seat",
+		"snippy_load_test_enabled": false,
+		"telemetry":                "disabled",
+		"token":                    "chat=1;exp=1726850160;sku=copilot_for_business_seat;st=dotcom;tid=ee5e553c-1825-4601-98b1-0f4dc0739c61;u=fakeuser;8kp=1:4cc6ae00735662b66225c9c92e827f088bb24c3e1910475b05a8fdd8e420f2b9",
+		"tracking_id":              "ee5e553c-1825-4601-98b1-0f4dc0739c61",
+		"vs_editor_fetcher":        false,
+		"vsc_electron_fetcher":     false,
+		"vsc_panel_v2":             false,
+	})
+}
+
+func (s *ProxyService) telemetry(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{})
+}
+
+func (s *ProxyService) user(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"avatar_url":          "https://avatars.githubusercontent.com/u/9919?v=4",
+		"bio":                 nil,
+		"blog":                "",
+		"company":             nil,
+		"created_at":          "2008-05-11T04:37:31Z",
+		"email":               nil,
+		"events_url":          "https://api.github.com/users/github/events{/privacy}",
+		"followers":           42848,
+		"followers_url":       "https://api.github.com/users/github/followers",
+		"following":           0,
+		"following_url":       "https://api.github.com/users/github/following{/other_user}",
+		"gists_url":           "https://api.github.com/users/github/gists{/gist_id}",
+		"gravatar_id":         "",
+		"hireable":            nil,
+		"html_url":            "https://github.com/github",
+		"id":                  9919,
+		"location":            "San Francisco, CA",
+		"login":               "github",
+		"name":                "GitHub",
+		"node_id":             "DEyOk9yZ2FuaXphdGlvbjk5MTk=",
+		"organizations_url":   "https://api.github.com/users/github/orgs",
+		"public_gists":        0,
+		"public_repos":        498,
+		"received_events_url": "https://api.github.com/users/github/received_events",
+		"repos_url":           "https://api.github.com/users/github/repos",
+		"site_admin":          false,
+		"starred_url":         "https://api.github.com/users/github/starred{/owner}{/repo}",
+		"subscriptions_url":   "https://api.github.com/users/github/subscriptions",
+		"twitter_username":    nil,
+		"type":                "User",
+		"updated_at":          "2022-11-29T19:44:55Z",
+		"url":                 "https://api.github.com/users/github",
+	})
 }
 
 type Pong struct {
@@ -216,6 +302,75 @@ func (s *ProxyService) pong(c *gin.Context) {
 		Now:    time.Now().Second(),
 		Status: "ok",
 		Ns1:    "200 OK",
+	})
+}
+
+func (s *ProxyService) loginDevice(c *gin.Context) {
+
+	body, err := io.ReadAll(c.Request.Body)
+	if nil != err {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	fmt.Println("Request Body: ", string(body))
+
+	c.JSON(http.StatusOK, gin.H{})
+}
+
+func generateDeviceCode() string {
+	var numbers [5]int32
+	for i := 0; i < 5; i++ {
+		numbers[i] = rand.Int31n(math.MaxInt32)
+	}
+	var hexStr string
+	for _, num := range numbers {
+		hexStr += fmt.Sprintf("%x", num)
+	}
+
+	return hexStr
+}
+
+func generateUserCode() string {
+	num := rand.Int31n(math.MaxInt32)
+	hexString := fmt.Sprintf("%04X-%04X", num>>16, num&0xFFFF)
+	return hexString
+}
+
+type authRequest struct {
+	DeviceCode string `json:"device_code"`
+	UserCode   string `json:"user_code"`
+	ClientId   string `json:"client_id"`
+	CreateTime int64  `json:"create_time"`
+}
+
+type deviceCodeReq struct {
+	ClientId string `json:"client_id" form:"client_id"`
+}
+
+func (s *ProxyService) loginDeviceCode(c *gin.Context) {
+	deviceCode := generateDeviceCode()
+	userCode := generateUserCode()
+
+	c.JSON(http.StatusOK, gin.H{
+		"device_code":      deviceCode,
+		"user_code":        userCode,
+		"verification_uri": "https://" + s.cfg.AuthDomain + "/login/device?user_code=" + userCode,
+		"expires_in":       899,
+		"interval":         5,
+	})
+}
+
+type oAuthAccessTokenReq struct {
+	ClientId   string `json:"client_id"`
+	DeviceCode string `json:"device_code"`
+	GrantType  string `json:"grant_type"`
+}
+
+func (s *ProxyService) loginOAuthAccessToken(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"access_token": "ghu_Xxxxxxxxxxxxxxxxxx",
+		"token_type":   "bearer",
+		"scope":        "",
 	})
 }
 
@@ -329,9 +484,10 @@ func (s *ProxyService) models(c *gin.Context) {
 					"tokenizer": "o200k_base",
 					"type":      "chat",
 				},
-				"id":     "gpt-4-o-preview",
-				"name":   "GPT 4o",
-				"object": "model",
+				"id":      "gpt-4-o-preview",
+				"name":    "GPT 4o",
+				"object":  "model",
+				"version": "gpt-4-o-preview",
 			},
 			{
 				"capabilities": gin.H{
@@ -388,6 +544,7 @@ func (s *ProxyService) completions(c *gin.Context) {
 		return
 	}
 
+	body = ConstructRequestBody(body, s.cfg)
 	model := gjson.GetBytes(body, "model").String()
 	if mapped, ok := s.cfg.ChatModelMap[model]; ok {
 		model = mapped
@@ -581,7 +738,7 @@ func constructWithChatModel(body []byte, messages interface{}) []byte {
 func main() {
 	cfg := readConfig()
 
-	gin.SetMode(gin.ReleaseMode)
+	gin.SetMode(gin.DebugMode)
 	r := gin.Default()
 
 	proxyService, err := NewProxyService(cfg)
